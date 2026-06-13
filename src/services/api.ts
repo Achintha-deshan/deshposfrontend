@@ -1,0 +1,29 @@
+import axios from "axios"
+
+const api = axios.create({
+  baseURL: process.env.API_URL || "http://localhost:5000/api/v1",
+})
+
+const PUBLIC_ENDPOINTS = [
+  "auth/login",
+  "auth/register",
+  "auth/staff-login",
+  "auth/otp/send",
+  "auth/otp/verify",
+]
+
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem("ACCESS_TOKEN")
+
+  const isPublic = PUBLIC_ENDPOINTS.some((url) =>
+    config.url?.includes(url)
+  )
+
+  if (!isPublic && token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+
+  return config
+})
+
+export default api
