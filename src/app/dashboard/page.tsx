@@ -42,13 +42,13 @@ export default function DashboardPage() {
         setBusiness(bizRes.data.data.business)
         setBranches(bizRes.data.data.branches)
 
-        // Load stats
         const [daily, alts, prods, sales] = await Promise.all([
-          getDailySalesApi(),
-          getAlertsApi(),
-          getProductsApi(),
-          api.get("/sales?limit=5"),
-        ])
+        getDailySalesApi().catch(() => null),
+        getAlertsApi().catch(() => null),
+        getProductsApi().catch(() => []),
+        api.get("/sales?limit=5").catch(() => ({ data: { data: [] } })),
+      ])
+      
         setDailySales(daily)
         setAlerts(alts || { lowStock: [], expired: [], nearExpiry: [] })
         setProductCount(Array.isArray(prods) ? prods.length : 0)
@@ -82,6 +82,28 @@ export default function DashboardPage() {
     (alerts.expired?.length || 0) +
     (alerts.nearExpiry?.length || 0)
 
+  
+  const isOwner = (user?.roles || []).includes("OWNER")
+  const isManager = user?.role === "MANAGER"
+  const isCashier = user?.role === "CASHIER"
+
+  const allActions = [
+    { label: "New Sale", icon: "🛒", route: "/pos", color: "bg-green-600 hover:bg-green-500", roles: ["OWNER", "MANAGER", "CASHIER"] },
+    { label: "New GRN", icon: "📥", route: "/purchase/new", color: "bg-blue-600 hover:bg-blue-500", roles: ["OWNER", "MANAGER"] },
+    { label: "Products", icon: "📦", route: "/products", color: "bg-slate-700 hover:bg-slate-600", roles: ["OWNER", "MANAGER", "CASHIER"] },
+    { label: "Add Product", icon: "➕", route: "/products/add", color: "bg-slate-700 hover:bg-slate-600", roles: ["OWNER", "MANAGER"] },
+    { label: "GRN History", icon: "📋", route: "/purchase", color: "bg-slate-700 hover:bg-slate-600", roles: ["OWNER", "MANAGER"] },
+    { label: "Sales", icon: "🧾", route: "/sales", color: "bg-slate-700 hover:bg-slate-600", roles: ["OWNER", "MANAGER", "CASHIER"] },
+    { label: "Suppliers", icon: "🏢", route: "/suppliers", color: "bg-slate-700 hover:bg-slate-600", roles: ["OWNER", "MANAGER"] },
+    { label: "Customers", icon: "👥", route: "/customers", color: "bg-slate-700 hover:bg-slate-600", roles: ["OWNER", "MANAGER", "CASHIER"] },
+    { label: "Reports", icon: "📊", route: "/reports", color: "bg-slate-700 hover:bg-slate-600", roles: ["OWNER", "MANAGER"] },
+    { label: "AI Assistant", icon: "🤖", route: "/ai", color: "bg-blue-700 hover:bg-blue-600", roles: ["OWNER", "MANAGER"] },
+    { label: "Staff", icon: "👥", route: "/staff", color: "bg-purple-700 hover:bg-purple-600", roles: ["OWNER"] },
+  ]
+
+  const currentRole = isOwner ? "OWNER" : (user?.role || "CASHIER")
+  const visibleActions = allActions.filter(a => a.roles.includes(currentRole))
+
   return (
     <div className="min-h-screen bg-slate-900">
 
@@ -103,7 +125,16 @@ export default function DashboardPage() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-slate-400 text-xs">{user?.name}</span>
+            <div className="text-right">
+              <p className="text-slate-300 text-xs font-medium">{user?.name}</p>
+              <span className={`text-xs px-1.5 py-0.5 rounded ${
+                isOwner ? "bg-blue-500/20 text-blue-400" :
+                isManager ? "bg-purple-500/20 text-purple-400" :
+                "bg-green-500/20 text-green-400"
+              }`}>
+                {isOwner ? "👑 Owner" : isManager ? "👔 Manager" : "🛒 Cashier"}
+              </span>
+            </div>
             <button
               onClick={() => {
                 localStorage.removeItem("ACCESS_TOKEN")
@@ -119,8 +150,7 @@ export default function DashboardPage() {
 
       <div className="max-w-7xl mx-auto px-4 py-6">
 
-        {/* Alerts Banner */}
-        {totalAlerts > 0 && (
+        {(isOwner || isManager) && totalAlerts > 0 && (
           <div className="mb-4 flex gap-2 flex-wrap">
             {alerts.expired?.length > 0 && (
               <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2 flex items-center gap-2">
@@ -143,103 +173,98 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4">
-            <div className="text-2xl mb-2">💰</div>
-            <div className="text-white font-bold text-lg">
-              Rs.{Number(dailySales?.total_amount || 0).toLocaleString()}
-            </div>
-            <div className="text-slate-500 text-xs">Today Sales</div>
-            <div className="text-slate-600 text-xs mt-1">
-              {dailySales?.total_bills || 0} bills
-            </div>
-          </div>
-
-          <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4">
-            <div className="text-2xl mb-2">📦</div>
-            <div className="text-white font-bold text-lg">{productCount}</div>
-            <div className="text-slate-500 text-xs">Products</div>
-            <button
-              onClick={() => router.push("/products")}
-              className="text-blue-400 text-xs mt-1 hover:text-blue-300">
-              View all →
-            </button>
-          </div>
-
-          <div className={`border rounded-xl p-4 ${
-            alerts.expired?.length > 0
-              ? "bg-red-500/10 border-red-500/30"
-              : alerts.nearExpiry?.length > 0
-                ? "bg-yellow-500/10 border-yellow-500/30"
-                : "bg-slate-800/50 border-slate-700/50"
-          }`}>
-            <div className="text-2xl mb-2">
-              {alerts.expired?.length > 0 ? "🚨" : alerts.nearExpiry?.length > 0 ? "⏰" : "✅"}
-            </div>
-            <div className={`font-bold text-lg ${
-              alerts.expired?.length > 0 ? "text-red-400" :
-              alerts.nearExpiry?.length > 0 ? "text-yellow-400" : "text-white"
-            }`}>
-              {alerts.expired?.length || 0}
-            </div>
-            <div className="text-slate-500 text-xs">Expired</div>
-            {alerts.nearExpiry?.length > 0 && (
-              <div className="text-yellow-400 text-xs mt-1">
-                +{alerts.nearExpiry.length} near expiry
+        {(isOwner || isManager) && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4">
+              <div className="text-2xl mb-2">💰</div>
+              <div className="text-white font-bold text-lg">
+                Rs.{Number(dailySales?.total_amount || 0).toLocaleString()}
               </div>
-            )}
-          </div>
-
-          <div className={`border rounded-xl p-4 ${
-            alerts.lowStock?.length > 0
-              ? "bg-orange-500/10 border-orange-500/30"
-              : "bg-slate-800/50 border-slate-700/50"
-          }`}>
-            <div className="text-2xl mb-2">⚠️</div>
-            <div className={`font-bold text-lg ${
-              alerts.lowStock?.length > 0 ? "text-orange-400" : "text-white"
-            }`}>
-              {alerts.lowStock?.length || 0}
+              <div className="text-slate-500 text-xs">Today Sales</div>
+              <div className="text-slate-600 text-xs mt-1">
+                {dailySales?.total_bills || 0} bills
+              </div>
             </div>
-            <div className="text-slate-500 text-xs">Low Stock</div>
-            <button
-              onClick={() => router.push("/products")}
-              className="text-orange-400 text-xs mt-1 hover:text-orange-300">
-              View →
-            </button>
+
+            <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4">
+              <div className="text-2xl mb-2">📦</div>
+              <div className="text-white font-bold text-lg">{productCount}</div>
+              <div className="text-slate-500 text-xs">Products</div>
+              <button
+                onClick={() => router.push("/products")}
+                className="text-blue-400 text-xs mt-1 hover:text-blue-300">
+                View all →
+              </button>
+            </div>
+
+            <div className={`border rounded-xl p-4 ${
+              alerts.expired?.length > 0
+                ? "bg-red-500/10 border-red-500/30"
+                : alerts.nearExpiry?.length > 0
+                  ? "bg-yellow-500/10 border-yellow-500/30"
+                  : "bg-slate-800/50 border-slate-700/50"
+            }`}>
+              <div className="text-2xl mb-2">
+                {alerts.expired?.length > 0 ? "🚨" : alerts.nearExpiry?.length > 0 ? "⏰" : "✅"}
+              </div>
+              <div className={`font-bold text-lg ${
+                alerts.expired?.length > 0 ? "text-red-400" :
+                alerts.nearExpiry?.length > 0 ? "text-yellow-400" : "text-white"
+              }`}>
+                {alerts.expired?.length || 0}
+              </div>
+              <div className="text-slate-500 text-xs">Expired</div>
+              {alerts.nearExpiry?.length > 0 && (
+                <div className="text-yellow-400 text-xs mt-1">
+                  +{alerts.nearExpiry.length} near expiry
+                </div>
+              )}
+            </div>
+
+            <div className={`border rounded-xl p-4 ${
+              alerts.lowStock?.length > 0
+                ? "bg-orange-500/10 border-orange-500/30"
+                : "bg-slate-800/50 border-slate-700/50"
+            }`}>
+              <div className="text-2xl mb-2">⚠️</div>
+              <div className={`font-bold text-lg ${
+                alerts.lowStock?.length > 0 ? "text-orange-400" : "text-white"
+              }`}>
+                {alerts.lowStock?.length || 0}
+              </div>
+              <div className="text-slate-500 text-xs">Low Stock</div>
+              <button
+                onClick={() => router.push("/products")}
+                className="text-orange-400 text-xs mt-1 hover:text-orange-300">
+                View →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {isCashier && (
+          <div className="mb-6 bg-gradient-to-r from-green-600/20 to-blue-600/20 border border-green-500/30 rounded-xl p-5">
+            <p className="text-white font-bold text-lg">👋 Welcome, {user?.name}!</p>
+            <p className="text-slate-400 text-sm mt-1">Ready to start selling? Tap "New Sale" below.</p>
+          </div>
+        )}
+
+        <div className="mb-6">
+          <h2 className="text-white font-semibold text-sm mb-3">Quick Actions</h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {visibleActions.map((action) => (
+              <button
+                key={action.label}
+                onClick={() => router.push(action.route)}
+                className={`${action.color} text-white rounded-xl p-4 text-left transition`}>
+                <div className="text-2xl mb-2">{action.icon}</div>
+                <div className="font-semibold text-sm">{action.label}</div>
+              </button>
+            ))}
           </div>
         </div>
 
-      {/* Quick Actions */}
-    <div className="mb-6">
-      <h2 className="text-white font-semibold text-sm mb-3">Quick Actions</h2>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {[
-          { label: "New Sale", icon: "🛒", route: "/pos", color: "bg-green-600 hover:bg-green-500" },
-          { label: "New GRN", icon: "📥", route: "/purchase/new", color: "bg-blue-600 hover:bg-blue-500" },
-          { label: "Products", icon: "📦", route: "/products", color: "bg-slate-700 hover:bg-slate-600" },
-          { label: "Add Product", icon: "➕", route: "/products/add", color: "bg-slate-700 hover:bg-slate-600" },
-          { label: "GRN History", icon: "📋", route: "/purchase", color: "bg-slate-700 hover:bg-slate-600" },
-          { label: "Sales", icon: "🧾", route: "/sales", color: "bg-slate-700 hover:bg-slate-600" },
-          { label: "Suppliers", icon: "🏢", route: "/suppliers", color: "bg-slate-700 hover:bg-slate-600" },
-          { label: "Customers", icon: "👥", route: "/customers", color: "bg-slate-700 hover:bg-slate-600" },
-          { label: "Reports", icon: "📊", route: "/reports", color: "bg-slate-700 hover:bg-slate-600" },
-          { label: "AI Assistant", icon: "🤖", route: "/ai", color: "bg-blue-700 hover:bg-blue-600" },
-        ].map((action) => (
-          <button
-            key={action.label}
-            onClick={() => router.push(action.route)}
-            className={`${action.color} text-white rounded-xl p-4 text-left transition`}>
-            <div className="text-2xl mb-2">{action.icon}</div>
-            <div className="font-semibold text-sm">{action.label}</div>
-          </button>
-        ))}
-      </div>
-    </div>
-
-        {/* Today Summary */}
-        {dailySales && Number(dailySales.total_bills) > 0 && (
+        {(isOwner || isManager) && dailySales && Number(dailySales.total_bills) > 0 && (
           <div className="mb-6">
             <h2 className="text-white font-semibold text-sm mb-3">Today Summary</h2>
             <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4">
@@ -267,7 +292,6 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Recent Sales */}
         <div className="mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-white font-semibold text-sm">Recent Sales</h2>
@@ -313,8 +337,7 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Branches */}
-        {branches.length > 1 && (
+        {isOwner && branches.length > 1 && (
           <div className="mb-6">
             <h2 className="text-white font-semibold text-sm mb-3">Branches</h2>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">

@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { useDispatch } from "react-redux"
-import { login } from "../../services/auth"
+import { login, staffLogin } from "../../services/auth"
 import { setTokens, setUser } from "../../redux/slices/authSlice"
 import { AppDispatch } from "../../redux/store"
 
@@ -23,26 +23,40 @@ export default function LoginPage() {
     try {
       setLoading(true)
       setError("")
-      const res = await login(identifier, password)
-      dispatch(setTokens({
-        accessToken: res.data.accessToken,
-        refreshToken: res.data.refreshToken,
-      }))
-      dispatch(setUser(res.data))
-       
-      const roles: string[] =  res.data.roles || []
 
-      if (roles.includes("OWNER")) {
-         if (res.data.hasBusinessSetup) { 
-           router.push("/dashboard")
-        }else{
-          router.push("/onboarding")
+      // ✅ Try Owner login first
+      try {
+        const res = await login(identifier, password)
+        dispatch(setTokens({
+          accessToken: res.data.accessToken,
+          refreshToken: res.data.refreshToken,
+        }))
+        dispatch(setUser({ ...res.data, isStaff: false }))
+
+        const roles: string[] = res.data.roles || []
+        if (roles.includes("OWNER")) {
+          if (res.data.hasBusinessSetup) {
+            router.push("/dashboard")
+          } else {
+            router.push("/onboarding")
+          }
+        } else {
+          router.push("/dashboard")
         }
-      } else {
+        return
+      } catch (ownerErr: any) {
+        // ✅ Owner login failed → try staff login
+        const staffRes = await staffLogin(identifier, password)
+        dispatch(setTokens({
+          accessToken: staffRes.data.accessToken,
+          refreshToken: staffRes.data.refreshToken,
+        }))
+        dispatch(setUser({ ...staffRes.data, isStaff: true }))
         router.push("/dashboard")
-}
-     } catch (err: any) {
-      setError(err.response?.data?.message || "Login failed!")
+        return
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.message || "Invalid credentials!")
     } finally {
       setLoading(false)
     }
@@ -71,10 +85,10 @@ export default function LoginPage() {
 
           <div className="flex flex-col gap-4">
             <div>
-              <label className="text-slate-400 text-xs font-medium mb-1.5 block">Email or Phone</label>
+              <label className="text-slate-400 text-xs font-medium mb-1.5 block">Email/Phone or Username</label>
               <input
                 type="text"
-                placeholder="email@example.com or 07XXXXXXXX"
+                placeholder="email@example.com / 07XXXXXXXX / username"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
                 className="w-full px-4 py-3 bg-slate-900/50 border border-slate-600/50 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition text-sm"
@@ -88,6 +102,7 @@ export default function LoginPage() {
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleLogin()}
                 className="w-full px-4 py-3 bg-slate-900/50 border border-slate-600/50 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition text-sm"
               />
             </div>
