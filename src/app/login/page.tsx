@@ -24,7 +24,7 @@ export default function LoginPage() {
       setLoading(true)
       setError("")
 
-      // ✅ Try Owner login first
+     
       try {
         const res = await login(identifier, password)
         dispatch(setTokens({
@@ -45,8 +45,8 @@ export default function LoginPage() {
         }
         return
       } catch (ownerErr: any) {
-        // ✅ Owner login failed → try staff login
         const staffRes = await staffLogin(identifier, password)
+        console.log("STAFF LOGIN RESPONSE,",staffRes.data)
         dispatch(setTokens({
           accessToken: staffRes.data.accessToken,
           refreshToken: staffRes.data.refreshToken,
