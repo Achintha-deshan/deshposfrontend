@@ -459,9 +459,20 @@ export default function AddProductPage() {
                 📷
                 <input type="file" accept="image/*" capture="environment" onChange={handleCameraCapture} className="hidden" />
               </label>
+              {!existingProduct && !form.barcode && (
+                <button
+                  onClick={() => {
+                    const generated = "200" + Date.now().toString().slice(-9)
+                    setForm(f => ({ ...f, barcode: generated }))
+                  }}
+                  className="px-3 py-3 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-medium whitespace-nowrap">
+                  🔢 Gen
+                </button>
+              )}
             </div>
             <p className="text-slate-600 text-xs mt-2">
               Existing product scan → batch list show · New barcode → add new product
+              {!existingProduct && !form.barcode && " · No barcode? Click Gen!"}
             </p>
           </div>
 
@@ -556,12 +567,21 @@ export default function AddProductPage() {
               {form.buy_price && form.sell_price && Number(form.buy_price) > 0 && (
                 <div className="flex items-end pb-1">
                   <div className="bg-green-500/10 border border-green-500/30 rounded-lg px-3 py-2 w-full">
-                    <p className="text-green-400 text-xs font-medium">
-                      Profit: Rs.{(Number(form.sell_price) - Number(form.buy_price)).toFixed(2)}
-                    </p>
-                    <p className="text-green-400/70 text-xs">
-                      ({(((Number(form.sell_price) - Number(form.buy_price)) / Number(form.buy_price)) * 100).toFixed(1)}%)
-                    </p>
+                    {(() => {
+                      const costPerSellUnit = Number(form.buy_price) / Number(form.conversion_rate || 1)
+                      const profit = Number(form.sell_price) - costPerSellUnit
+                      const profitPct = costPerSellUnit > 0 ? (profit / costPerSellUnit) * 100 : 0
+                      return (
+                        <>
+                          <p className="text-slate-400 text-xs">
+                            Cost/{form.sell_unit}: Rs.{costPerSellUnit.toFixed(2)}
+                          </p>
+                          <p className="text-green-400 text-xs font-medium mt-0.5">
+                            Profit: Rs.{profit.toFixed(2)} ({profitPct.toFixed(1)}%)
+                          </p>
+                        </>
+                      )
+                    })()}
                   </div>
                 </div>
               )}

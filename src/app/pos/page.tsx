@@ -9,7 +9,7 @@ import {
   updateItemDiscount, updateUnitPrice,
   updateBatchNumber,
   removeFromCart, setCartDiscount,
-  setPaymentType, setCustomerName, clearCart,
+  setPaymentType, setCustomerName, clearCart,updateDisplayQty
 } from "../../redux/slices/cartSlice"
 import { getProductByBarcode, searchProductsApi } from "../../services/product"
 import { createSaleApi, getSaleByNumberApi } from "../../services/sale"
@@ -555,34 +555,47 @@ export default function POSPage() {
 
                     <div className="grid grid-cols-3 gap-2 items-end">
                       <div>
-                        <label className="text-slate-500 text-xs block mb-1">Qty ({item.selected_unit})</label>
-                        <div className="flex items-center bg-slate-700 rounded-lg overflow-hidden">
-                          <button
-                            onClick={() => {
-                              if (item.quantity > 0.5)
-                                dispatch(updateQuantity({ index, quantity: Number((item.quantity - 1).toFixed(1)) }))
-                              refocus()
-                            }}
-                            className="text-white w-8 h-8 flex items-center justify-center hover:bg-slate-600 font-bold text-lg flex-shrink-0">−</button>
-                          <input
-                            type="number"
-                            value={item.quantity}
-                            onChange={(e) => {
-                              const val = Number(e.target.value)
-                              if (val > 0) dispatch(updateQuantity({ index, quantity: val }))
-                            }}
-                            onBlur={refocus}
-                            className="flex-1 bg-transparent text-white text-sm text-center focus:outline-none py-1 min-w-0"
-                            step="0.5" min="0.5"
-                          />
-                          <button
-                            onClick={() => {
-                              dispatch(updateQuantity({ index, quantity: Number((item.quantity + 1).toFixed(1)) }))
-                              refocus()
-                            }}
-                            className="text-white w-8 h-8 flex items-center justify-center hover:bg-slate-600 font-bold text-lg flex-shrink-0">+</button>
-                        </div>
-                      </div>
+  <label className="text-slate-500 text-xs block mb-1">Quantity</label>
+  <div className="flex gap-1">
+    <input
+      type="number"
+      value={item.displayQty ?? item.quantity}
+      onChange={(e) => {
+        const inputVal = Number(e.target.value)
+        const unit = item.displayUnit || item.selected_unit
+        const actualQty = (unit === "g" || unit === "ml") ? inputVal / 1000 : inputVal
+        if (actualQty > 0) {
+          dispatch(updateQuantity({ index, quantity: actualQty }))
+          dispatch(updateDisplayQty({ index, displayQty: inputVal, displayUnit: unit }))
+        }
+      }}
+      onBlur={refocus}
+      className="flex-1 min-w-0 px-2 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-sm text-center focus:outline-none"
+    />
+    {(item.selected_unit === "kg" || item.selected_unit === "litre") ? (
+      <select
+        value={item.displayUnit || item.selected_unit}
+        onChange={(e) => {
+          const newUnit = e.target.value
+          const newDisplayQty = (newUnit === "g" || newUnit === "ml")
+            ? item.quantity * 1000
+            : item.quantity
+          dispatch(updateDisplayQty({ index, displayQty: newDisplayQty, displayUnit: newUnit }))
+          refocus()
+        }}
+        className="px-2 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-xs focus:outline-none flex-shrink-0">
+        <option value={item.selected_unit}>{item.selected_unit}</option>
+        <option value={item.selected_unit === "kg" ? "g" : "ml"}>
+          {item.selected_unit === "kg" ? "g" : "ml"}
+        </option>
+      </select>
+    ) : (
+      <span className="px-2 py-2 bg-slate-700/50 text-slate-400 text-xs rounded-lg flex-shrink-0 flex items-center">
+        {item.selected_unit}
+      </span>
+    )}
+  </div>
+</div>
                       <div>
                         <label className="text-slate-500 text-xs block mb-1">Price (Rs./{item.sell_unit})</label>
                         <div className="bg-slate-700 border border-blue-500/30 rounded-lg px-2 py-1.5">

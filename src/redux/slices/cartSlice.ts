@@ -18,7 +18,9 @@ export interface CartItem {
   batch_number?: string
   has_serial?: boolean
   serial_number?: string
-  stock?: number  // ✅ add
+  stock?: number  
+  displayQty?: number
+  displayUnit?: string  // ✅ add
 }
 
 interface CartState {
@@ -64,6 +66,19 @@ const cartSlice = createSlice({
       if (item) item.quantity = action.payload.quantity
     },
 
+    // ✅ NEW
+    updateDisplayQty: (state, action: PayloadAction<{
+      index: number
+      displayQty: number
+      displayUnit: string
+    }>) => {
+      const item = state.items[action.payload.index]
+      if (item) {
+        item.displayQty = action.payload.displayQty
+        item.displayUnit = action.payload.displayUnit
+      }
+    },
+
     updateUnit: (state, action: PayloadAction<{
       index: number
       selected_unit: string
@@ -88,7 +103,6 @@ const cartSlice = createSlice({
       if (item) item.unit_price = action.payload.unit_price
     },
 
-    // ✅ NEW
     updateBatchNumber: (state, action: PayloadAction<{
       index: number
       batch_number: string
@@ -135,10 +149,11 @@ const cartSlice = createSlice({
 export const {
   addToCart,
   updateQuantity,
+  updateDisplayQty,  // ✅ add
   updateUnit,
   updateItemDiscount,
   updateUnitPrice,
-  updateBatchNumber,  // ✅ export
+  updateBatchNumber,  
   removeFromCart,
   setCartDiscount,
   setPaymentType,
