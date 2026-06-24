@@ -9,7 +9,7 @@ import {
   updateItemDiscount, updateUnitPrice,
   updateBatchNumber,
   removeFromCart, setCartDiscount,
-  setPaymentType, setCustomerName, clearCart,updateDisplayQty
+  setPaymentType, setCustomerName, clearCart, updateDisplayQty
 } from "../../redux/slices/cartSlice"
 import { getProductByBarcode, searchProductsApi } from "../../services/product"
 import { createSaleApi, getSaleByNumberApi } from "../../services/sale"
@@ -27,6 +27,7 @@ export default function POSPage() {
   const barcodeRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const scanControlsRef = useRef<any>(null)
+  const audioCtxRef = useRef<AudioContext | null>(null)
 
   const [branchId, setBranchId] = useState("")
   const [branches, setBranches] = useState<any[]>([])
@@ -34,7 +35,6 @@ export default function POSPage() {
   const [barcodeInput, setBarcodeInput] = useState("")
   const [searchResults, setSearchResults] = useState<any[]>([])
   const [showSearch, setShowSearch] = useState(false)
-  const [scanning, setScanning] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
@@ -51,6 +51,11 @@ export default function POSPage() {
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null)
   const [isCreditSale, setIsCreditSale] = useState(false)
   const [showCustomerResults, setShowCustomerResults] = useState(false)
+
+  // ✅ Live camera scanner state
+  const [showScanner, setShowScanner] = useState(false)
+  const [scanSuccess, setScanSuccess] = useState(false)
+  const [scannerError, setScannerError] = useState("")
 
   useEffect(() => {
     const load = async () => {
@@ -70,9 +75,50 @@ export default function POSPage() {
     })
   }, [])
 
+  // Clean up camera stream on unmount
+  useEffect(() => {
+    return () => {
+      if (scanControlsRef.current) scanControlsRef.current.stop()
+    }
+  }, [])
+
   const refocus = useCallback(() => {
     setTimeout(() => barcodeRef.current?.focus(), 50)
   }, [])
+
+  // ✅ Beep sound on successful scan (Web Audio API — works on every device, no file needed)
+  const playBeep = () => {
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+      }
+      const ctx = audioCtxRef.current
+      const oscillator = ctx.createOscillator()
+      const gain = ctx.createGain()
+      oscillator.connect(gain)
+      gain.connect(ctx.destination)
+      oscillator.type = "sine"
+      oscillator.frequency.value = 1000
+      gain.gain.setValueAtTime(0.3, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15)
+      oscillator.start()
+      oscillator.stop(ctx.currentTime + 0.15)
+    } catch {}
+  }
+
+  // ✅ Try to flash the camera torch briefly on successful scan (if device supports it)
+  const flashTorch = async (stream: MediaStream) => {
+    try {
+      const track = stream.getVideoTracks()[0]
+      const capabilities = (track.getCapabilities?.() as any) || {}
+      if (capabilities.torch) {
+        await track.applyConstraints({ advanced: [{ torch: true } as any] })
+        setTimeout(() => {
+          track.applyConstraints({ advanced: [{ torch: false } as any] }).catch(() => {})
+        }, 300)
+      }
+    } catch {}
+  }
 
   const subtotal = cart.items.reduce((sum, item) => {
     const qty = item.selected_unit === item.buy_unit
@@ -224,39 +270,52 @@ export default function POSPage() {
     setBatchSelectProduct(null)
   }
 
+  // ✅ Live camera scanner — opens a small box with a real-time video feed (works on any device: mobile/tablet/desktop)
   const startCameraScan = async () => {
+    setScannerError("")
+    setShowScanner(true)
     try {
       const { BrowserMultiFormatReader } = await import("@zxing/browser")
-      setScanning(true)
       const reader = new BrowserMultiFormatReader()
       const devices = await BrowserMultiFormatReader.listVideoInputDevices()
       const backCamera = devices.find(d =>
         d.label.toLowerCase().includes("back") ||
         d.label.toLowerCase().includes("rear")
       ) || devices[devices.length - 1]
+
       const controls = await reader.decodeFromVideoDevice(
         backCamera?.deviceId, videoRef.current!,
         (result) => {
           if (result) {
-            controls.stop()
-            setScanning(false)
-            handleBarcodeSearch(result.getText())
+            const code = result.getText()
+            playBeep()
+            setScanSuccess(true)
+
+            const stream = videoRef.current?.srcObject as MediaStream
+            if (stream) flashTorch(stream)
+
+            setTimeout(() => {
+              controls.stop()
+              setShowScanner(false)
+              setScanSuccess(false)
+              handleBarcodeSearch(code)
+            }, 350)
           }
         }
       )
       scanControlsRef.current = controls
     } catch {
-      showError("Camera failed! Use HTTPS.")
-      setScanning(false)
+      setScannerError("Camera access failed! Make sure you're using HTTPS and have granted camera permission.")
     }
   }
 
-  const stopScan = () => {
+  const stopCameraScan = () => {
     if (scanControlsRef.current) {
       scanControlsRef.current.stop()
       scanControlsRef.current = null
     }
-    setScanning(false)
+    setShowScanner(false)
+    setScanSuccess(false)
     refocus()
   }
 
@@ -319,7 +378,6 @@ export default function POSPage() {
         created_at: new Date().toISOString(),
       }
 
-      // Credit sale → record to customer ledger
       if (isCreditSale && selectedCustomer) {
         try {
           await api.post(`/customers/${selectedCustomer.id}/sale`, {
@@ -355,10 +413,11 @@ export default function POSPage() {
   }
 
   return (
+    // ✅ Responsive root: column layout on small screens, row on large screens (handled below)
     <div className="h-screen bg-slate-950 flex flex-col overflow-hidden">
 
-      {/* Top Bar */}
-      <div className="bg-slate-900 border-b border-slate-800 px-3 py-2 flex items-center gap-2 flex-shrink-0">
+      {/* Top Bar — ✅ wraps on small screens */}
+      <div className="bg-slate-900 border-b border-slate-800 px-3 py-2 flex items-center gap-2 flex-wrap flex-shrink-0">
         <button onClick={() => router.push("/dashboard")}
           className="text-slate-500 hover:text-white text-sm p-1">←</button>
         <h1 className="text-white font-bold text-base">🛒 POS</h1>
@@ -372,7 +431,7 @@ export default function POSPage() {
           </select>
         )}
 
-        <div className="flex-1" />
+        <div className="flex-1 hidden sm:block" />
         <PrinterStatus />
 
         <div className="flex items-center bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
@@ -400,11 +459,11 @@ export default function POSPage() {
         )}
       </div>
 
-      {/* Main Layout */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* Main Layout — ✅ stacks vertically on small/medium screens, side-by-side on large screens */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
 
         {/* LEFT */}
-        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0">
 
           {/* Scan Input */}
           <div className="bg-slate-900 border-b border-slate-800 p-2 flex-shrink-0">
@@ -414,7 +473,7 @@ export default function POSPage() {
               </div>
             )}
             <div className="flex gap-2">
-              <div className="flex-1 relative">
+              <div className="flex-1 relative min-w-0">
                 <input
                   ref={barcodeRef}
                   type="text"
@@ -450,30 +509,12 @@ export default function POSPage() {
                   </div>
                 )}
               </div>
-              <button onClick={scanning ? stopScan : startCameraScan}
-                className={`px-3 py-2.5 rounded-xl text-sm font-medium transition flex-shrink-0 ${scanning ? "bg-red-600 text-white animate-pulse" : "bg-purple-600 hover:bg-purple-500 text-white"}`}>
-                {scanning ? "⏹" : "📷"}
+              {/* ✅ Opens the live camera scanner box — works on mobile, tablet, and desktop (webcam) */}
+              <button onClick={startCameraScan}
+                className="px-3 py-2.5 rounded-xl text-sm font-medium transition flex-shrink-0 bg-purple-600 hover:bg-purple-500 text-white">
+                📷
               </button>
             </div>
-
-            {scanning && (
-              <div className="mt-2 relative rounded-xl overflow-hidden bg-black">
-                <video ref={videoRef} className="w-full object-cover"
-                  style={{ maxHeight: isMobile ? "200px" : "150px" }} />
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="relative w-48 h-28">
-                    <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-blue-400" />
-                    <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-blue-400" />
-                    <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-blue-400" />
-                    <div className="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-blue-400" />
-                    <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-red-500/60 animate-pulse" />
-                  </div>
-                </div>
-                <p className="absolute bottom-2 left-0 right-0 text-center text-white text-xs bg-black/40">
-                  Point camera at barcode
-                </p>
-              </div>
-            )}
           </div>
 
           {/* Cart Items */}
@@ -482,12 +523,10 @@ export default function POSPage() {
               <div className="flex flex-col items-center justify-center h-full text-center py-8">
                 <p className="text-5xl mb-3 opacity-30">🛒</p>
                 <p className="text-slate-600 text-sm">Scan or search to add products</p>
-                {isMobile && (
-                  <button onClick={startCameraScan}
-                    className="mt-4 px-6 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-sm font-medium">
-                    📷 Open Camera
-                  </button>
-                )}
+                <button onClick={startCameraScan}
+                  className="mt-4 px-6 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-sm font-medium">
+                  📷 Open Camera
+                </button>
               </div>
             ) : (
               cart.items.map((item, index) => {
@@ -555,47 +594,47 @@ export default function POSPage() {
 
                     <div className="grid grid-cols-3 gap-2 items-end">
                       <div>
-  <label className="text-slate-500 text-xs block mb-1">Quantity</label>
-  <div className="flex gap-1">
-    <input
-      type="number"
-      value={item.displayQty ?? item.quantity}
-      onChange={(e) => {
-        const inputVal = Number(e.target.value)
-        const unit = item.displayUnit || item.selected_unit
-        const actualQty = (unit === "g" || unit === "ml") ? inputVal / 1000 : inputVal
-        if (actualQty > 0) {
-          dispatch(updateQuantity({ index, quantity: actualQty }))
-          dispatch(updateDisplayQty({ index, displayQty: inputVal, displayUnit: unit }))
-        }
-      }}
-      onBlur={refocus}
-      className="flex-1 min-w-0 px-2 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-sm text-center focus:outline-none"
-    />
-    {(item.selected_unit === "kg" || item.selected_unit === "litre") ? (
-      <select
-        value={item.displayUnit || item.selected_unit}
-        onChange={(e) => {
-          const newUnit = e.target.value
-          const newDisplayQty = (newUnit === "g" || newUnit === "ml")
-            ? item.quantity * 1000
-            : item.quantity
-          dispatch(updateDisplayQty({ index, displayQty: newDisplayQty, displayUnit: newUnit }))
-          refocus()
-        }}
-        className="px-2 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-xs focus:outline-none flex-shrink-0">
-        <option value={item.selected_unit}>{item.selected_unit}</option>
-        <option value={item.selected_unit === "kg" ? "g" : "ml"}>
-          {item.selected_unit === "kg" ? "g" : "ml"}
-        </option>
-      </select>
-    ) : (
-      <span className="px-2 py-2 bg-slate-700/50 text-slate-400 text-xs rounded-lg flex-shrink-0 flex items-center">
-        {item.selected_unit}
-      </span>
-    )}
-  </div>
-</div>
+                        <label className="text-slate-500 text-xs block mb-1">Quantity</label>
+                        <div className="flex gap-1">
+                          <input
+                            type="number"
+                            value={item.displayQty ?? item.quantity}
+                            onChange={(e) => {
+                              const inputVal = Number(e.target.value)
+                              const unit = item.displayUnit || item.selected_unit
+                              const actualQty = (unit === "g" || unit === "ml") ? inputVal / 1000 : inputVal
+                              if (actualQty > 0) {
+                                dispatch(updateQuantity({ index, quantity: actualQty }))
+                                dispatch(updateDisplayQty({ index, displayQty: inputVal, displayUnit: unit }))
+                              }
+                            }}
+                            onBlur={refocus}
+                            className="flex-1 min-w-0 px-2 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-sm text-center focus:outline-none"
+                          />
+                          {(item.selected_unit === "kg" || item.selected_unit === "litre") ? (
+                            <select
+                              value={item.displayUnit || item.selected_unit}
+                              onChange={(e) => {
+                                const newUnit = e.target.value
+                                const newDisplayQty = (newUnit === "g" || newUnit === "ml")
+                                  ? item.quantity * 1000
+                                  : item.quantity
+                                dispatch(updateDisplayQty({ index, displayQty: newDisplayQty, displayUnit: newUnit }))
+                                refocus()
+                              }}
+                              className="px-2 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-xs focus:outline-none flex-shrink-0">
+                              <option value={item.selected_unit}>{item.selected_unit}</option>
+                              <option value={item.selected_unit === "kg" ? "g" : "ml"}>
+                                {item.selected_unit === "kg" ? "g" : "ml"}
+                              </option>
+                            </select>
+                          ) : (
+                            <span className="px-2 py-2 bg-slate-700/50 text-slate-400 text-xs rounded-lg flex-shrink-0 flex items-center">
+                              {item.selected_unit}
+                            </span>
+                          )}
+                        </div>
+                      </div>
                       <div>
                         <label className="text-slate-500 text-xs block mb-1">Price (Rs./{item.sell_unit})</label>
                         <div className="bg-slate-700 border border-blue-500/30 rounded-lg px-2 py-1.5">
@@ -644,8 +683,8 @@ export default function POSPage() {
           </div>
         </div>
 
-        {/* RIGHT — Payment Panel */}
-        <div className="w-72 xl:w-80 bg-slate-900 border-l border-slate-800 flex flex-col flex-shrink-0">
+        {/* RIGHT — Payment Panel — ✅ full width on small screens, fixed width on large screens */}
+        <div className="w-full lg:w-72 xl:w-80 bg-slate-900 border-t lg:border-t-0 lg:border-l border-slate-800 flex flex-col flex-shrink-0 max-h-[55vh] lg:max-h-none overflow-y-auto lg:overflow-visible">
 
           {/* ✅ Customer Search */}
           <div className="px-3 pt-3 pb-2 border-b border-slate-800">
@@ -671,7 +710,6 @@ export default function POSPage() {
                 </button>
               )}
 
-              {/* Customer Dropdown */}
               {showCustomerResults && customerResults.length > 0 && (
                 <div className="absolute top-full left-0 right-0 bg-slate-800 border border-slate-600 rounded-xl mt-1 z-50 shadow-2xl overflow-hidden max-h-48 overflow-y-auto">
                   {customerResults.map((c: any) => (
@@ -702,7 +740,6 @@ export default function POSPage() {
               )}
             </div>
 
-            {/* Selected Customer Info + Credit Toggle */}
             {selectedCustomer && (
               <div className="mt-2 bg-blue-500/10 border border-blue-500/20 rounded-xl px-3 py-2">
                 <div className="flex justify-between items-center">
@@ -719,7 +756,6 @@ export default function POSPage() {
                   </div>
                 </div>
 
-                {/* Credit Toggle — only credit customers */}
                 {selectedCustomer.is_credit_customer && (
                   <div
                     onClick={() => setIsCreditSale(!isCreditSale)}
@@ -876,6 +912,57 @@ export default function POSPage() {
           </div>
         </div>
       </div>
+
+      {/* ✅ Live Camera Scanner Box (responsive: works on mobile/tablet/desktop) */}
+      {showScanner && (
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50 px-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-4 w-full max-w-xs sm:max-w-sm shadow-2xl">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-white font-bold text-sm">📷 Scan Barcode</h3>
+              <button onClick={stopCameraScan}
+                className="text-slate-500 hover:text-white text-2xl leading-none">×</button>
+            </div>
+
+            <div className="relative rounded-xl overflow-hidden bg-black aspect-square">
+              <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
+
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className={`relative w-56 h-32 transition-all ${scanSuccess ? "scale-105" : ""}`}>
+                  <div className={`absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 rounded-tl-lg ${scanSuccess ? "border-green-400" : "border-blue-400"}`} />
+                  <div className={`absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 rounded-tr-lg ${scanSuccess ? "border-green-400" : "border-blue-400"}`} />
+                  <div className={`absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 rounded-bl-lg ${scanSuccess ? "border-green-400" : "border-blue-400"}`} />
+                  <div className={`absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 rounded-br-lg ${scanSuccess ? "border-green-400" : "border-blue-400"}`} />
+                  {!scanSuccess && (
+                    <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-red-500/70 animate-pulse" />
+                  )}
+                  {scanSuccess && (
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className="text-4xl">✅</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {scanSuccess && (
+                <div className="absolute inset-0 bg-green-400/20 animate-pulse" />
+              )}
+            </div>
+
+            {scannerError ? (
+              <p className="text-red-400 text-xs text-center mt-3">{scannerError}</p>
+            ) : (
+              <p className="text-slate-400 text-xs text-center mt-3">
+                {scanSuccess ? "✅ Barcode detected!" : "Point camera at barcode — scans automatically"}
+              </p>
+            )}
+
+            <button onClick={stopCameraScan}
+              className="w-full mt-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-sm">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Receipt Modal */}
       {showReceipt && lastSale && (

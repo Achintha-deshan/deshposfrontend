@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import {
   getProductByBarcode,
@@ -87,6 +87,9 @@ export default function AddProductPage() {
   const router = useRouter()
   const fileRef = useRef<HTMLInputElement>(null)
   const barcodeRef = useRef<HTMLInputElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const scanControlsRef = useRef<any>(null)
+  const audioCtxRef = useRef<AudioContext | null>(null)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
@@ -104,6 +107,15 @@ export default function AddProductPage() {
   const [selectedBatch, setSelectedBatch] = useState<any>(null)
   const [batchMode, setBatchMode] = useState<"new" | "update">("new")
   const [showBatchPopup, setShowBatchPopup] = useState(false)
+
+  // ✅ Camera scanner state
+  const [showScanner, setShowScanner] = useState(false)
+  const [scanFlash, setScanFlash] = useState(false)
+  const [scanSuccess, setScanSuccess] = useState(false)
+  const [scannerError, setScannerError] = useState("")
+
+  // ✅ Custom category — separate state so the input never disappears while typing
+  const [customCategory, setCustomCategory] = useState("")
 
   const [form, setForm] = useState({
     branch_id: "",
@@ -182,6 +194,53 @@ export default function AddProductPage() {
     load()
   }, [])
 
+  // Clean up camera stream if component unmounts while scanning
+  useEffect(() => {
+    return () => {
+      if (scanControlsRef.current) {
+        scanControlsRef.current.stop()
+      }
+    }
+  }, [])
+
+  // ✅ Beep sound on successful scan (Web Audio API — no external file needed)
+  const playBeep = () => {
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+      }
+      const ctx = audioCtxRef.current
+      const oscillator = ctx.createOscillator()
+      const gain = ctx.createGain()
+      oscillator.connect(gain)
+      gain.connect(ctx.destination)
+      oscillator.type = "sine"
+      oscillator.frequency.value = 1000
+      gain.gain.setValueAtTime(0.3, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15)
+      oscillator.start()
+      oscillator.stop(ctx.currentTime + 0.15)
+    } catch {
+      // Audio not supported — silently ignore
+    }
+  }
+
+  // ✅ Try to flash the camera torch briefly on successful scan
+  const flashTorch = async (stream: MediaStream) => {
+    try {
+      const track = stream.getVideoTracks()[0]
+      const capabilities = (track.getCapabilities?.() as any) || {}
+      if (capabilities.torch) {
+        await track.applyConstraints({ advanced: [{ torch: true } as any] })
+        setTimeout(() => {
+          track.applyConstraints({ advanced: [{ torch: false } as any] }).catch(() => {})
+        }, 300)
+      }
+    } catch {
+      // Torch not supported on this device — ignore
+    }
+  }
+
   const handleBarcodeSearch = async (barcode?: string) => {
     const code = barcode || form.barcode
     if (!code.trim()) return
@@ -223,20 +282,55 @@ export default function AddProductPage() {
     }
   }
 
-  const handleCameraCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+  // ✅ Live camera scanner — opens a small box with a real-time video feed (like a real barcode scanner)
+  const startCameraScan = async () => {
+    setScannerError("")
+    setShowScanner(true)
     try {
       const { BrowserMultiFormatReader } = await import("@zxing/browser")
       const reader = new BrowserMultiFormatReader()
-      const url = URL.createObjectURL(file)
-      const result = await reader.decodeFromImageUrl(url)
-      const barcode = result.getText()
-      setForm(f => ({ ...f, barcode }))
-      await handleBarcodeSearch(barcode)
-    } catch {
-      setError("Barcode not detected! Try again.")
+      const devices = await BrowserMultiFormatReader.listVideoInputDevices()
+      const backCamera = devices.find(d =>
+        d.label.toLowerCase().includes("back") ||
+        d.label.toLowerCase().includes("rear")
+      ) || devices[devices.length - 1]
+
+      const controls = await reader.decodeFromVideoDevice(
+        backCamera?.deviceId,
+        videoRef.current!,
+        (result, err) => {
+          if (result) {
+            const code = result.getText()
+            playBeep()
+            setScanSuccess(true)
+
+            // Flash the torch briefly as a visual confirmation
+            const stream = videoRef.current?.srcObject as MediaStream
+            if (stream) flashTorch(stream)
+
+            setTimeout(() => {
+              controls.stop()
+              setShowScanner(false)
+              setScanSuccess(false)
+              setForm(f => ({ ...f, barcode: code }))
+              handleBarcodeSearch(code)
+            }, 350)
+          }
+        }
+      )
+      scanControlsRef.current = controls
+    } catch (err) {
+      setScannerError("Camera access failed! Make sure you're using HTTPS and have granted camera permission.")
     }
+  }
+
+  const stopCameraScan = () => {
+    if (scanControlsRef.current) {
+      scanControlsRef.current.stop()
+      scanControlsRef.current = null
+    }
+    setShowScanner(false)
+    setScanSuccess(false)
   }
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -289,6 +383,9 @@ export default function AddProductPage() {
   }
 
   const handleSubmit = async () => {
+    // ✅ Resolve the category value (custom typed value wins if "Add New Category" was used)
+    const finalCategory = form.category === "__custom__" ? customCategory.trim() : form.category
+
     if (!form.name || !form.sell_price || !form.branch_id) {
       return setError("Name, Sell Price and Branch required!")
     }
@@ -337,7 +434,7 @@ export default function AddProductPage() {
       formData.append("branch_id", form.branch_id)
       formData.append("name", form.name)
       formData.append("barcode", form.barcode)
-      formData.append("category", form.category === "__custom__" ? "" : form.category)
+      formData.append("category", finalCategory)
       formData.append("print_price", form.print_price || "0")
       formData.append("buy_price", form.buy_price || "0")
       formData.append("sell_price", form.sell_price)
@@ -455,10 +552,11 @@ export default function AddProductPage() {
                 className="px-4 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium">
                 {barcodeSearching ? "⏳" : "🔍"}
               </button>
-              <label className="px-3 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-sm cursor-pointer">
+              {/* ✅ Live camera scanner button — opens a small video box (real-time scan) */}
+              <button type="button" onClick={startCameraScan}
+                className="px-3 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-sm">
                 📷
-                <input type="file" accept="image/*" capture="environment" onChange={handleCameraCapture} className="hidden" />
-              </label>
+              </button>
               {!existingProduct && !form.barcode && (
                 <button
                   onClick={() => {
@@ -520,19 +618,29 @@ export default function AddProductPage() {
             />
           </div>
 
-          {/* Category */}
+          {/* Category — ✅ fixed: custom input uses its own state, never disappears */}
           {!existingProduct && (
             <div>
               <label className="text-slate-400 text-xs mb-1 block">Category</label>
-              <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}
+              <select
+                value={form.category === "__custom__" ? "__custom__" : form.category}
+                onChange={(e) => {
+                  const val = e.target.value
+                  setForm({ ...form, category: val })
+                  if (val !== "__custom__") setCustomCategory("")
+                }}
                 className="w-full px-4 py-3 bg-slate-800 border border-slate-600/50 rounded-xl text-white text-sm focus:outline-none">
                 <option value="">Select category</option>
                 {allCategories.map(c => <option key={c} value={c}>{c}</option>)}
                 <option value="__custom__">+ Add New Category</option>
               </select>
               {form.category === "__custom__" && (
-                <input type="text" placeholder="Type new category name" autoFocus
-                  onChange={(e) => setForm({ ...form, category: e.target.value })}
+                <input
+                  type="text"
+                  placeholder="Type new category name"
+                  autoFocus
+                  value={customCategory}
+                  onChange={(e) => setCustomCategory(e.target.value)}
                   className="w-full mt-2 px-4 py-3 bg-slate-800 border border-blue-500/50 rounded-xl text-white placeholder-slate-500 text-sm focus:outline-none"
                 />
               )}
@@ -851,6 +959,59 @@ export default function AddProductPage() {
           </button>
         </div>
       </div>
+
+      {/* ✅ Live Camera Scanner Box */}
+      {showScanner && (
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50 px-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-4 w-full max-w-xs shadow-2xl">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-white font-bold text-sm">📷 Scan Barcode</h3>
+              <button onClick={stopCameraScan}
+                className="text-slate-500 hover:text-white text-2xl leading-none">×</button>
+            </div>
+
+            <div className="relative rounded-xl overflow-hidden bg-black aspect-square">
+              <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
+
+              {/* Scan frame overlay */}
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className={`relative w-56 h-32 transition-all ${scanSuccess ? "scale-105" : ""}`}>
+                  <div className={`absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 rounded-tl-lg ${scanSuccess ? "border-green-400" : "border-blue-400"}`} />
+                  <div className={`absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 rounded-tr-lg ${scanSuccess ? "border-green-400" : "border-blue-400"}`} />
+                  <div className={`absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 rounded-bl-lg ${scanSuccess ? "border-green-400" : "border-blue-400"}`} />
+                  <div className={`absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 rounded-br-lg ${scanSuccess ? "border-green-400" : "border-blue-400"}`} />
+                  {!scanSuccess && (
+                    <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-red-500/70 animate-pulse" />
+                  )}
+                  {scanSuccess && (
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className="text-4xl">✅</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Success flash overlay */}
+              {scanSuccess && (
+                <div className="absolute inset-0 bg-green-400/20 animate-pulse" />
+              )}
+            </div>
+
+            {scannerError ? (
+              <p className="text-red-400 text-xs text-center mt-3">{scannerError}</p>
+            ) : (
+              <p className="text-slate-400 text-xs text-center mt-3">
+                {scanSuccess ? "✅ Barcode detected!" : "Point camera at barcode — scans automatically"}
+              </p>
+            )}
+
+            <button onClick={stopCameraScan}
+              className="w-full mt-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-sm">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ✅ Batch Select Popup */}
       {showBatchPopup && existingProduct && (

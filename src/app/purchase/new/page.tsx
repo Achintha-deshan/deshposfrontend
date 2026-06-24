@@ -113,6 +113,8 @@ export default function NewPurchasePage() {
   const router = useRouter()
   const barcodeRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const scanControlsRef = useRef<any>(null)
+  const audioCtxRef = useRef<AudioContext | null>(null)
 
   const [suppliers, setSuppliers] = useState<any[]>([])
   const [branches, setBranches] = useState<any[]>([])
@@ -122,8 +124,15 @@ export default function NewPurchasePage() {
   const [businessType, setBusinessType] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
-  const [scanning, setScanning] = useState(false)
   const [batchCounter, setBatchCounter] = useState(1)
+
+  // ✅ Live camera scanner state
+  const [showScanner, setShowScanner] = useState(false)
+  const [scanSuccess, setScanSuccess] = useState(false)
+  const [scannerError, setScannerError] = useState("")
+
+  // ✅ Custom category — separate state so the input never disappears while typing
+  const [customCategory, setCustomCategory] = useState("")
 
   const [supplierId, setSupplierId] = useState("")
   const [branchId, setBranchId] = useState("")
@@ -178,6 +187,9 @@ export default function NewPurchasePage() {
     return num
   }
 
+  // ✅ Generate a barcode automatically (same scheme used in Add Product page)
+  const generateBarcode = () => "200" + Date.now().toString().slice(-9)
+
   const getAllCategories = () => {
     const defaults = categoryMap[businessType] || []
     return [...new Set([...defaults, ...dbCategories])]
@@ -208,16 +220,59 @@ export default function NewPurchasePage() {
     load()
   }, [])
 
+  // Clean up camera stream on unmount
+  useEffect(() => {
+    return () => {
+      if (scanControlsRef.current) scanControlsRef.current.stop()
+    }
+  }, [])
+
+  // ✅ Beep sound on successful scan
+  const playBeep = () => {
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+      }
+      const ctx = audioCtxRef.current
+      const oscillator = ctx.createOscillator()
+      const gain = ctx.createGain()
+      oscillator.connect(gain)
+      gain.connect(ctx.destination)
+      oscillator.type = "sine"
+      oscillator.frequency.value = 1000
+      gain.gain.setValueAtTime(0.3, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15)
+      oscillator.start()
+      oscillator.stop(ctx.currentTime + 0.15)
+    } catch {}
+  }
+
+  // ✅ Try to flash the camera torch briefly on successful scan
+  const flashTorch = async (stream: MediaStream) => {
+    try {
+      const track = stream.getVideoTracks()[0]
+      const capabilities = (track.getCapabilities?.() as any) || {}
+      if (capabilities.torch) {
+        await track.applyConstraints({ advanced: [{ torch: true } as any] })
+        setTimeout(() => {
+          track.applyConstraints({ advanced: [{ torch: false } as any] }).catch(() => {})
+        }, 300)
+      }
+    } catch {}
+  }
+
   const totalAmount = items.reduce(
     (sum, item) => sum + item.buy_price * item.quantity, 0
   ) - Number(discount || 0)
 
   const outstanding = totalAmount - Number(paidAmount || 0)
 
+  // ✅ Live camera scanner — opens a small box with a real-time video feed (like a real barcode scanner)
   const startCameraScan = async () => {
+    setScannerError("")
+    setShowScanner(true)
     try {
       const { BrowserMultiFormatReader } = await import("@zxing/browser")
-      setScanning(true)
       const reader = new BrowserMultiFormatReader()
       const devices = await BrowserMultiFormatReader.listVideoInputDevices()
       const backCamera = devices.find(d =>
@@ -231,30 +286,34 @@ export default function NewPurchasePage() {
         (result) => {
           if (result) {
             const barcode = result.getText()
-            if (controls) controls.stop()
-            setScanning(false)
-            handleBarcodeSearch(barcode)
+            playBeep()
+            setScanSuccess(true)
+
+            const stream = videoRef.current?.srcObject as MediaStream
+            if (stream) flashTorch(stream)
+
+            setTimeout(() => {
+              controls.stop()
+              setShowScanner(false)
+              setScanSuccess(false)
+              handleBarcodeSearch(barcode)
+            }, 350)
           }
         }
       )
+      scanControlsRef.current = controls
     } catch {
-      setError("Camera access failed! Use HTTPS or try manual input.")
-      setScanning(false)
+      setScannerError("Camera access failed! Make sure you're using HTTPS and have granted camera permission.")
     }
   }
 
-  const handleImageCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    try {
-      const { BrowserMultiFormatReader } = await import("@zxing/browser")
-      const reader = new BrowserMultiFormatReader()
-      const url = URL.createObjectURL(file)
-      const result = await reader.decodeFromImageUrl(url)
-      handleBarcodeSearch(result.getText())
-    } catch {
-      setError("Barcode not detected! Try again.")
+  const stopCameraScan = () => {
+    if (scanControlsRef.current) {
+      scanControlsRef.current.stop()
+      scanControlsRef.current = null
     }
+    setShowScanner(false)
+    setScanSuccess(false)
   }
 
   const handleBarcodeSearch = async (barcode?: string) => {
@@ -315,6 +374,9 @@ export default function NewPurchasePage() {
   const handleQuickAdd = () => {
     if (!quickAdd.product_name || !quickAdd.sell_price) return
 
+    // ✅ Resolve custom category value
+    const finalCategory = quickAdd.category === "__custom__" ? customCategory.trim() : quickAdd.category
+
     const conversionRate = Number(quickAdd.conversion_rate) || 1
     const totalStock = quickAdd.has_variants
       ? quickAdd.variants.reduce((sum, v) => sum + Number(v.stock || 0), 0)
@@ -323,7 +385,7 @@ export default function NewPurchasePage() {
     setItems([...items, {
       product_name: quickAdd.product_name,
       barcode: quickAdd.barcode || undefined,
-      category: quickAdd.category || undefined,
+      category: finalCategory || undefined,
       quantity: totalStock,
       buy_price: Number(quickAdd.buy_price) || 0,
       sell_price: Number(quickAdd.sell_price),
@@ -348,6 +410,7 @@ export default function NewPurchasePage() {
     }])
 
     setShowQuickAdd(false)
+    setCustomCategory("")
     setQuickAdd(getDefaultQuickAdd(businessType))
   }
 
@@ -446,15 +509,11 @@ export default function NewPurchasePage() {
                 className="px-4 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm">
                 🔍
               </button>
-              <button onClick={startCameraScan}
+              {/* ✅ Live camera scanner — same as Add Product page */}
+              <button type="button" onClick={startCameraScan}
                 className="px-4 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-sm">
                 📷
               </button>
-              <label className="px-4 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm cursor-pointer">
-                📸
-                <input type="file" accept="image/*" capture="environment"
-                  onChange={handleImageCapture} className="hidden" />
-              </label>
               <button onClick={() => {
                 const defaults = businessDefaults[businessType] || { has_expiry: false, has_variants: false, has_serial: false }
                 setQuickAdd(q => ({
@@ -471,24 +530,6 @@ export default function NewPurchasePage() {
                 + New
               </button>
             </div>
-
-            {scanning && (
-              <div className="mt-3 relative">
-                <video ref={videoRef} className="w-full rounded-xl max-h-48 object-cover" />
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="w-48 h-32 relative">
-                    <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-blue-400" />
-                    <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-blue-400" />
-                    <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-blue-400" />
-                    <div className="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-blue-400" />
-                  </div>
-                </div>
-                <button onClick={() => setScanning(false)}
-                  className="absolute top-2 right-2 bg-red-500 text-white px-3 py-1 rounded-lg text-xs">
-                  Stop ✕
-                </button>
-              </div>
-            )}
           </div>
 
           {/* Items */}
@@ -542,27 +583,27 @@ export default function NewPurchasePage() {
                     </div>
                   </div>
                   {/* Batch + Expiry */}
-<div className="mt-2">
-  <div className={`grid gap-2 ${item.has_expiry ? "grid-cols-2" : "grid-cols-1"}`}>
-    <div>
-      <label className="text-slate-500 text-xs">Batch No</label>
-      <input type="text" placeholder="BAT-2026-0001"
-        value={item.batch_number || ""}
-        onChange={(e) => updateItem(index, "batch_number", e.target.value)}
-        className="w-full px-2 py-1.5 bg-slate-900 border border-slate-600/50 rounded-lg text-white placeholder-slate-500 text-xs focus:outline-none mt-1"
-      />
-    </div>
-    {item.has_expiry && (
-      <div>
-        <label className="text-slate-500 text-xs">Expiry Date</label>
-        <input type="date" value={item.expiry_date || ""}
-          onChange={(e) => updateItem(index, "expiry_date", e.target.value)}
-          className="w-full px-2 py-1.5 bg-slate-900 border border-yellow-500/30 rounded-lg text-white text-xs focus:outline-none mt-1"
-        />
-      </div>
-    )}
-  </div>
-</div>
+                  <div className="mt-2">
+                    <div className={`grid gap-2 ${item.has_expiry ? "grid-cols-2" : "grid-cols-1"}`}>
+                      <div>
+                        <label className="text-slate-500 text-xs">Batch No</label>
+                        <input type="text" placeholder="BAT-2026-0001"
+                          value={item.batch_number || ""}
+                          onChange={(e) => updateItem(index, "batch_number", e.target.value)}
+                          className="w-full px-2 py-1.5 bg-slate-900 border border-slate-600/50 rounded-lg text-white placeholder-slate-500 text-xs focus:outline-none mt-1"
+                        />
+                      </div>
+                      {item.has_expiry && (
+                        <div>
+                          <label className="text-slate-500 text-xs">Expiry Date</label>
+                          <input type="date" value={item.expiry_date || ""}
+                            onChange={(e) => updateItem(index, "expiry_date", e.target.value)}
+                            className="w-full px-2 py-1.5 bg-slate-900 border border-yellow-500/30 rounded-lg text-white text-xs focus:outline-none mt-1"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
                   <div className="text-right mt-2">
                     <span className="text-blue-400 text-sm font-semibold">
                       Rs. {(item.buy_price * item.quantity).toLocaleString()}
@@ -675,6 +716,57 @@ export default function NewPurchasePage() {
           )}
         </div>
 
+        {/* ✅ Live Camera Scanner Box */}
+        {showScanner && (
+          <div className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50 px-4">
+            <div className="bg-slate-800 border border-slate-700 rounded-2xl p-4 w-full max-w-xs shadow-2xl">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-white font-bold text-sm">📷 Scan Barcode</h3>
+                <button onClick={stopCameraScan}
+                  className="text-slate-500 hover:text-white text-2xl leading-none">×</button>
+              </div>
+
+              <div className="relative rounded-xl overflow-hidden bg-black aspect-square">
+                <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
+
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className={`relative w-56 h-32 transition-all ${scanSuccess ? "scale-105" : ""}`}>
+                    <div className={`absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 rounded-tl-lg ${scanSuccess ? "border-green-400" : "border-blue-400"}`} />
+                    <div className={`absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 rounded-tr-lg ${scanSuccess ? "border-green-400" : "border-blue-400"}`} />
+                    <div className={`absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 rounded-bl-lg ${scanSuccess ? "border-green-400" : "border-blue-400"}`} />
+                    <div className={`absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 rounded-br-lg ${scanSuccess ? "border-green-400" : "border-blue-400"}`} />
+                    {!scanSuccess && (
+                      <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-red-500/70 animate-pulse" />
+                    )}
+                    {scanSuccess && (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <span className="text-4xl">✅</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {scanSuccess && (
+                  <div className="absolute inset-0 bg-green-400/20 animate-pulse" />
+                )}
+              </div>
+
+              {scannerError ? (
+                <p className="text-red-400 text-xs text-center mt-3">{scannerError}</p>
+              ) : (
+                <p className="text-slate-400 text-xs text-center mt-3">
+                  {scanSuccess ? "✅ Barcode detected!" : "Point camera at barcode — scans automatically"}
+                </p>
+              )}
+
+              <button onClick={stopCameraScan}
+                className="w-full mt-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-sm">
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Found Product Popup */}
         {showProductOptions && foundProduct && (
           <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 px-4">
@@ -778,14 +870,23 @@ export default function NewPurchasePage() {
                   className="w-full px-4 py-3 bg-slate-900 border border-slate-600/50 rounded-xl text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                 />
 
-                {/* Barcode + Part No */}
+                {/* Barcode + Part No — ✅ now with auto-generate button */}
                 {["bike", "auto", "hardware", "electronics", "phone"].includes(businessType) ? (
                   <div className="grid grid-cols-2 gap-2">
-                    <input type="text" placeholder="Barcode"
-                      value={quickAdd.barcode}
-                      onChange={(e) => setQuickAdd({ ...quickAdd, barcode: e.target.value })}
-                      className="px-3 py-2 bg-slate-900 border border-slate-600/50 rounded-xl text-white placeholder-slate-500 text-sm focus:outline-none"
-                    />
+                    <div className="flex gap-1">
+                      <input type="text" placeholder="Barcode"
+                        value={quickAdd.barcode}
+                        onChange={(e) => setQuickAdd({ ...quickAdd, barcode: e.target.value })}
+                        className="flex-1 px-3 py-2 bg-slate-900 border border-slate-600/50 rounded-xl text-white placeholder-slate-500 text-sm focus:outline-none"
+                      />
+                      {!quickAdd.barcode && (
+                        <button
+                          onClick={() => setQuickAdd({ ...quickAdd, barcode: generateBarcode() })}
+                          className="px-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs whitespace-nowrap">
+                          🔢
+                        </button>
+                      )}
+                    </div>
                     <input type="text" placeholder="Part No (optional)"
                       value={quickAdd.part_number}
                       onChange={(e) => setQuickAdd({ ...quickAdd, part_number: e.target.value })}
@@ -793,24 +894,43 @@ export default function NewPurchasePage() {
                     />
                   </div>
                 ) : (
-                  <input type="text" placeholder="Barcode (optional)"
-                    value={quickAdd.barcode}
-                    onChange={(e) => setQuickAdd({ ...quickAdd, barcode: e.target.value })}
-                    className="w-full px-3 py-2 bg-slate-900 border border-slate-600/50 rounded-xl text-white placeholder-slate-500 text-sm focus:outline-none"
-                  />
+                  <div className="flex gap-2">
+                    <input type="text" placeholder="Barcode (optional)"
+                      value={quickAdd.barcode}
+                      onChange={(e) => setQuickAdd({ ...quickAdd, barcode: e.target.value })}
+                      className="flex-1 px-3 py-2 bg-slate-900 border border-slate-600/50 rounded-xl text-white placeholder-slate-500 text-sm focus:outline-none"
+                    />
+                    {/* ✅ Auto-generate barcode button (same scheme as Add Product page) */}
+                    {!quickAdd.barcode && (
+                      <button
+                        onClick={() => setQuickAdd({ ...quickAdd, barcode: generateBarcode() })}
+                        className="px-3 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-medium whitespace-nowrap">
+                        🔢 Gen
+                      </button>
+                    )}
+                  </div>
                 )}
 
-                {/* Category */}
-                <select value={quickAdd.category}
-                  onChange={(e) => setQuickAdd({ ...quickAdd, category: e.target.value })}
+                {/* Category — ✅ fixed: custom input uses its own state, never disappears */}
+                <select
+                  value={quickAdd.category === "__custom__" ? "__custom__" : quickAdd.category}
+                  onChange={(e) => {
+                    const val = e.target.value
+                    setQuickAdd({ ...quickAdd, category: val })
+                    if (val !== "__custom__") setCustomCategory("")
+                  }}
                   className="w-full px-4 py-3 bg-slate-900 border border-slate-600/50 rounded-xl text-white text-sm focus:outline-none">
                   <option value="">Select category</option>
                   {allCategories.map(c => <option key={c} value={c}>{c}</option>)}
                   <option value="__custom__">+ Add New Category</option>
                 </select>
                 {quickAdd.category === "__custom__" && (
-                  <input type="text" placeholder="Type new category name" autoFocus
-                    onChange={(e) => setQuickAdd({ ...quickAdd, category: e.target.value })}
+                  <input
+                    type="text"
+                    placeholder="Type new category name"
+                    autoFocus
+                    value={customCategory}
+                    onChange={(e) => setCustomCategory(e.target.value)}
                     className="w-full px-4 py-3 bg-slate-900 border border-blue-500/50 rounded-xl text-white placeholder-slate-500 text-sm focus:outline-none"
                   />
                 )}
@@ -979,37 +1099,36 @@ export default function NewPurchasePage() {
                 </div>
 
                 {/* Batch Details — Always show batch number */}
-<div className={`rounded-xl p-3 border ${
-  quickAdd.has_expiry
-    ? "bg-slate-900/50 border-yellow-500/30"
-    : "bg-slate-900/50 border-slate-700"
-}`}>
-  <p className={`text-xs mb-2 ${quickAdd.has_expiry ? "text-yellow-400" : "text-slate-400"}`}>
-    🏷️ Batch {quickAdd.has_expiry ? "& Expiry" : "Number"}
-  </p>
-  <div className="flex gap-2 mb-2">
-    <input type="text" placeholder="Batch Number (optional)"
-      value={quickAdd.batch_number}
-      onChange={(e) => setQuickAdd({ ...quickAdd, batch_number: e.target.value })}
-      className={`flex-1 px-3 py-2 bg-slate-800 rounded-lg text-white placeholder-slate-500 text-sm focus:outline-none border ${
-        quickAdd.has_expiry ? "border-yellow-500/30" : "border-slate-600/50"
-      }`}
-    />
-    <button
-      onClick={() => setQuickAdd({ ...quickAdd, batch_number: getNextBatchNumber() })}
-      className="px-3 py-2 bg-slate-700 border border-slate-600 text-slate-400 hover:text-white rounded-lg text-xs">
-      🔄 Auto
-    </button>
-  </div>
+                <div className={`rounded-xl p-3 border ${
+                  quickAdd.has_expiry
+                    ? "bg-slate-900/50 border-yellow-500/30"
+                    : "bg-slate-900/50 border-slate-700"
+                }`}>
+                  <p className={`text-xs mb-2 ${quickAdd.has_expiry ? "text-yellow-400" : "text-slate-400"}`}>
+                    🏷️ Batch {quickAdd.has_expiry ? "& Expiry" : "Number"}
+                  </p>
+                  <div className="flex gap-2 mb-2">
+                    <input type="text" placeholder="Batch Number (optional)"
+                      value={quickAdd.batch_number}
+                      onChange={(e) => setQuickAdd({ ...quickAdd, batch_number: e.target.value })}
+                      className={`flex-1 px-3 py-2 bg-slate-800 rounded-lg text-white placeholder-slate-500 text-sm focus:outline-none border ${
+                        quickAdd.has_expiry ? "border-yellow-500/30" : "border-slate-600/50"
+                      }`}
+                    />
+                    <button
+                      onClick={() => setQuickAdd({ ...quickAdd, batch_number: getNextBatchNumber() })}
+                      className="px-3 py-2 bg-slate-700 border border-slate-600 text-slate-400 hover:text-white rounded-lg text-xs">
+                      🔄 Auto
+                    </button>
+                  </div>
 
-  {/* Expiry date — only if has_expiry */}
-  {quickAdd.has_expiry && (
-    <input type="date" value={quickAdd.expiry_date}
-      onChange={(e) => setQuickAdd({ ...quickAdd, expiry_date: e.target.value })}
-      className="w-full px-3 py-2 bg-slate-800 border border-yellow-500/30 rounded-lg text-white text-sm focus:outline-none"
-    />
-  )}
-</div>
+                  {quickAdd.has_expiry && (
+                    <input type="date" value={quickAdd.expiry_date}
+                      onChange={(e) => setQuickAdd({ ...quickAdd, expiry_date: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-800 border border-yellow-500/30 rounded-lg text-white text-sm focus:outline-none"
+                    />
+                  )}
+                </div>
 
                 {/* Variants */}
                 {quickAdd.has_variants && (
@@ -1076,7 +1195,7 @@ export default function NewPurchasePage() {
 
                 {/* Buttons */}
                 <div className="flex gap-2 mt-2">
-                  <button onClick={() => setShowQuickAdd(false)}
+                  <button onClick={() => { setShowQuickAdd(false); setCustomCategory("") }}
                     className="flex-1 py-3 border border-slate-600 text-slate-400 hover:text-white rounded-xl text-sm">
                     Cancel
                   </button>
