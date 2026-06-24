@@ -267,45 +267,54 @@ export default function NewPurchasePage() {
 
   const outstanding = totalAmount - Number(paidAmount || 0)
 
-  // ✅ Live camera scanner — opens a small box with a real-time video feed (like a real barcode scanner)
-  const startCameraScan = async () => {
-    setScannerError("")
-    setShowScanner(true)
-    try {
-      const { BrowserMultiFormatReader } = await import("@zxing/browser")
-      const reader = new BrowserMultiFormatReader()
-      const devices = await BrowserMultiFormatReader.listVideoInputDevices()
-      const backCamera = devices.find(d =>
-        d.label.toLowerCase().includes("back") ||
-        d.label.toLowerCase().includes("rear")
-      ) || devices[devices.length - 1]
-
-      const controls = await reader.decodeFromVideoDevice(
-        backCamera?.deviceId,
-        videoRef.current!,
-        (result) => {
-          if (result) {
-            const barcode = result.getText()
-            playBeep()
-            setScanSuccess(true)
-
-            const stream = videoRef.current?.srcObject as MediaStream
-            if (stream) flashTorch(stream)
-
-            setTimeout(() => {
-              controls.stop()
-              setShowScanner(false)
-              setScanSuccess(false)
-              handleBarcodeSearch(barcode)
-            }, 350)
-          }
-        }
-      )
-      scanControlsRef.current = controls
-    } catch {
-      setScannerError("Camera access failed! Make sure you're using HTTPS and have granted camera permission.")
+ const startCameraScan = async () => {
+  setScannerError("")
+  setShowScanner(true)
+  
+  await new Promise(resolve => setTimeout(resolve, 100))
+  
+  try {
+    const { BrowserMultiFormatReader } = await import("@zxing/browser")
+    const reader = new BrowserMultiFormatReader()
+    const devices = await BrowserMultiFormatReader.listVideoInputDevices()
+    
+    if (devices.length === 0) {
+      setScannerError("No camera found on this device!")
+      return
     }
+    
+    const backCamera = devices.find(d =>
+      d.label.toLowerCase().includes("back") ||
+      d.label.toLowerCase().includes("rear")
+    ) || devices[devices.length - 1]
+
+    const controls = await reader.decodeFromVideoDevice(
+      backCamera?.deviceId, videoRef.current!,
+      (result, err) => {
+        if (result) {
+          const code = result.getText()
+          playBeep()
+          setScanSuccess(true)
+
+          const stream = videoRef.current?.srcObject as MediaStream
+          if (stream) flashTorch(stream)
+
+          setTimeout(() => {
+            controls.stop()
+            setShowScanner(false)
+            setScanSuccess(false)
+            handleBarcodeSearch(code)
+          }, 350)
+        }
+        // err is expected on every frame where no barcode is found — ignore it
+      }
+    )
+    scanControlsRef.current = controls
+  } catch (err: any) {
+    console.error("Camera scan error:", err)
+    setScannerError(`Camera failed: ${err?.message || "Unknown error"}. Try again or check permissions.`)
   }
+}
 
   const stopCameraScan = () => {
     if (scanControlsRef.current) {
@@ -374,7 +383,6 @@ export default function NewPurchasePage() {
   const handleQuickAdd = () => {
     if (!quickAdd.product_name || !quickAdd.sell_price) return
 
-    // ✅ Resolve custom category value
     const finalCategory = quickAdd.category === "__custom__" ? customCategory.trim() : quickAdd.category
 
     const conversionRate = Number(quickAdd.conversion_rate) || 1
@@ -716,7 +724,7 @@ export default function NewPurchasePage() {
           )}
         </div>
 
-        {/* ✅ Live Camera Scanner Box */}
+        {/*  Live Camera Scanner Box */}
         {showScanner && (
           <div className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50 px-4">
             <div className="bg-slate-800 border border-slate-700 rounded-2xl p-4 w-full max-w-xs shadow-2xl">
@@ -727,8 +735,7 @@ export default function NewPurchasePage() {
               </div>
 
               <div className="relative rounded-xl overflow-hidden bg-black aspect-square">
-                <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
-
+                <video ref={videoRef} className="w-full h-full object-cover" autoPlay muted playsInline />
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                   <div className={`relative w-56 h-32 transition-all ${scanSuccess ? "scale-105" : ""}`}>
                     <div className={`absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 rounded-tl-lg ${scanSuccess ? "border-green-400" : "border-blue-400"}`} />
@@ -870,7 +877,7 @@ export default function NewPurchasePage() {
                   className="w-full px-4 py-3 bg-slate-900 border border-slate-600/50 rounded-xl text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                 />
 
-                {/* Barcode + Part No — ✅ now with auto-generate button */}
+                {/* Barcode + Part No —  now with auto-generate button */}
                 {["bike", "auto", "hardware", "electronics", "phone"].includes(businessType) ? (
                   <div className="grid grid-cols-2 gap-2">
                     <div className="flex gap-1">
@@ -911,7 +918,7 @@ export default function NewPurchasePage() {
                   </div>
                 )}
 
-                {/* Category — ✅ fixed: custom input uses its own state, never disappears */}
+                {/* Category —*/}
                 <select
                   value={quickAdd.category === "__custom__" ? "__custom__" : quickAdd.category}
                   onChange={(e) => {

@@ -282,47 +282,54 @@ export default function AddProductPage() {
     }
   }
 
-  // ✅ Live camera scanner — opens a small box with a real-time video feed (like a real barcode scanner)
-  const startCameraScan = async () => {
-    setScannerError("")
-    setShowScanner(true)
-    try {
-      const { BrowserMultiFormatReader } = await import("@zxing/browser")
-      const reader = new BrowserMultiFormatReader()
-      const devices = await BrowserMultiFormatReader.listVideoInputDevices()
-      const backCamera = devices.find(d =>
-        d.label.toLowerCase().includes("back") ||
-        d.label.toLowerCase().includes("rear")
-      ) || devices[devices.length - 1]
-
-      const controls = await reader.decodeFromVideoDevice(
-        backCamera?.deviceId,
-        videoRef.current!,
-        (result, err) => {
-          if (result) {
-            const code = result.getText()
-            playBeep()
-            setScanSuccess(true)
-
-            // Flash the torch briefly as a visual confirmation
-            const stream = videoRef.current?.srcObject as MediaStream
-            if (stream) flashTorch(stream)
-
-            setTimeout(() => {
-              controls.stop()
-              setShowScanner(false)
-              setScanSuccess(false)
-              setForm(f => ({ ...f, barcode: code }))
-              handleBarcodeSearch(code)
-            }, 350)
-          }
-        }
-      )
-      scanControlsRef.current = controls
-    } catch (err) {
-      setScannerError("Camera access failed! Make sure you're using HTTPS and have granted camera permission.")
+ const startCameraScan = async () => {
+  setScannerError("")
+  setShowScanner(true)
+  
+  await new Promise(resolve => setTimeout(resolve, 100))
+  
+  try {
+    const { BrowserMultiFormatReader } = await import("@zxing/browser")
+    const reader = new BrowserMultiFormatReader()
+    const devices = await BrowserMultiFormatReader.listVideoInputDevices()
+    
+    if (devices.length === 0) {
+      setScannerError("No camera found on this device!")
+      return
     }
+    
+    const backCamera = devices.find(d =>
+      d.label.toLowerCase().includes("back") ||
+      d.label.toLowerCase().includes("rear")
+    ) || devices[devices.length - 1]
+
+    const controls = await reader.decodeFromVideoDevice(
+      backCamera?.deviceId, videoRef.current!,
+      (result, err) => {
+        if (result) {
+          const code = result.getText()
+          playBeep()
+          setScanSuccess(true)
+
+          const stream = videoRef.current?.srcObject as MediaStream
+          if (stream) flashTorch(stream)
+
+          setTimeout(() => {
+            controls.stop()
+            setShowScanner(false)
+            setScanSuccess(false)
+            handleBarcodeSearch(code)
+          }, 350)
+        }
+        // err is expected on every frame where no barcode is found — ignore it
+      }
+    )
+    scanControlsRef.current = controls
+  } catch (err: any) {
+    console.error("Camera scan error:", err)
+    setScannerError(`Camera failed: ${err?.message || "Unknown error"}. Try again or check permissions.`)
   }
+}
 
   const stopCameraScan = () => {
     if (scanControlsRef.current) {
@@ -960,7 +967,7 @@ export default function AddProductPage() {
         </div>
       </div>
 
-      {/* ✅ Live Camera Scanner Box */}
+      {/*  Live Camera Scanner Box */}
       {showScanner && (
         <div className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50 px-4">
           <div className="bg-slate-800 border border-slate-700 rounded-2xl p-4 w-full max-w-xs shadow-2xl">
@@ -971,8 +978,7 @@ export default function AddProductPage() {
             </div>
 
             <div className="relative rounded-xl overflow-hidden bg-black aspect-square">
-              <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
-
+                <video ref={videoRef} className="w-full h-full object-cover" autoPlay muted playsInline />
               {/* Scan frame overlay */}
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className={`relative w-56 h-32 transition-all ${scanSuccess ? "scale-105" : ""}`}>
@@ -1013,7 +1019,7 @@ export default function AddProductPage() {
         </div>
       )}
 
-      {/* ✅ Batch Select Popup */}
+      {/* Batch Select Popup */}
       {showBatchPopup && existingProduct && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 px-4">
           <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 w-full max-w-sm shadow-2xl max-h-[85vh] overflow-y-auto">
