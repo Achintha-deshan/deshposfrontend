@@ -90,6 +90,7 @@ export default function AddProductPage() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const scanControlsRef = useRef<any>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
+  const barcodeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
@@ -110,7 +111,6 @@ export default function AddProductPage() {
 
   // ✅ Camera scanner state
   const [showScanner, setShowScanner] = useState(false)
-  const [scanFlash, setScanFlash] = useState(false)
   const [scanSuccess, setScanSuccess] = useState(false)
   const [scannerError, setScannerError] = useState("")
 
@@ -194,11 +194,14 @@ export default function AddProductPage() {
     load()
   }, [])
 
-  // Clean up camera stream if component unmounts while scanning
+  // Clean up camera stream + debounce timer on unmount
   useEffect(() => {
     return () => {
       if (scanControlsRef.current) {
         scanControlsRef.current.stop()
+      }
+      if (barcodeDebounceRef.current) {
+        clearTimeout(barcodeDebounceRef.current)
       }
     }
   }, [])
@@ -210,6 +213,7 @@ export default function AddProductPage() {
         audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
       }
       const ctx = audioCtxRef.current
+      if (ctx.state === "suspended") ctx.resume()
       const oscillator = ctx.createOscillator()
       const gain = ctx.createGain()
       oscillator.connect(gain)
@@ -241,9 +245,14 @@ export default function AddProductPage() {
     }
   }
 
+  // ✅ Always fills the field, then looks up the product (existing or new)
   const handleBarcodeSearch = async (barcode?: string) => {
     const code = barcode || form.barcode
     if (!code.trim()) return
+
+    // Always reflect the code in the input field
+    setForm(f => ({ ...f, barcode: code }))
+
     setBarcodeSearching(true)
     try {
       const [product, batchNumber] = await Promise.all([
@@ -258,6 +267,7 @@ export default function AddProductPage() {
       setBatch({ batch_number: batchNumber, expiry_date: "", quantity: "" })
       setForm(f => ({
         ...f,
+        barcode: code,
         name: product.name,
         category: product.category || "",
         buy_price: product.buy_price.toString(),
@@ -275,6 +285,7 @@ export default function AddProductPage() {
       }))
       setShowBatchPopup(true)
     } catch {
+      // New barcode (not found) — keep it in the field so user can add a new product
       setExistingProduct(null)
       setExistingBatches([])
     } finally {
@@ -282,54 +293,81 @@ export default function AddProductPage() {
     }
   }
 
- const startCameraScan = async () => {
-  setScannerError("")
-  setShowScanner(true)
-  
-  await new Promise(resolve => setTimeout(resolve, 100))
-  
-  try {
-    const { BrowserMultiFormatReader } = await import("@zxing/browser")
-    const reader = new BrowserMultiFormatReader()
-    const devices = await BrowserMultiFormatReader.listVideoInputDevices()
-    
-    if (devices.length === 0) {
-      setScannerError("No camera found on this device!")
+  // ✅ Handles manual typing — debounced auto-search after 400ms of inactivity
+  const handleBarcodeInputChange = (value: string) => {
+    setForm(f => ({ ...f, barcode: value }))
+
+    if (barcodeDebounceRef.current) clearTimeout(barcodeDebounceRef.current)
+
+    if (value.trim().length >= 6) {
+      barcodeDebounceRef.current = setTimeout(() => {
+        handleBarcodeSearch(value)
+      }, 400)
+    } else {
+      // Too short to be a real barcode yet — clear any stale match
+      setExistingProduct(null)
+      setExistingBatches([])
+    }
+  }
+
+  // ✅ Live camera scanner — opens a small box with a real-time video feed (real-time scan)
+  const startCameraScan = async () => {
+    setScannerError("")
+    setShowScanner(true)
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    if (!videoRef.current) {
+      setScannerError("Camera box not ready! Try again.")
       return
     }
-    
-    const backCamera = devices.find(d =>
-      d.label.toLowerCase().includes("back") ||
-      d.label.toLowerCase().includes("rear")
-    ) || devices[devices.length - 1]
 
-    const controls = await reader.decodeFromVideoDevice(
-      backCamera?.deviceId, videoRef.current!,
-      (result, err) => {
-        if (result) {
-          const code = result.getText()
-          playBeep()
-          setScanSuccess(true)
+    try {
+      const { BrowserMultiFormatReader } = await import("@zxing/browser")
+      const reader = new BrowserMultiFormatReader()
+      const devices = await BrowserMultiFormatReader.listVideoInputDevices()
 
-          const stream = videoRef.current?.srcObject as MediaStream
-          if (stream) flashTorch(stream)
-
-          setTimeout(() => {
-            controls.stop()
-            setShowScanner(false)
-            setScanSuccess(false)
-            handleBarcodeSearch(code)
-          }, 350)
-        }
-        // err is expected on every frame where no barcode is found — ignore it
+      if (devices.length === 0) {
+        setScannerError("No camera found on this device!")
+        return
       }
-    )
-    scanControlsRef.current = controls
-  } catch (err: any) {
-    console.error("Camera scan error:", err)
-    setScannerError(`Camera failed: ${err?.message || "Unknown error"}. Try again or check permissions.`)
+
+      const backCamera = devices.find(d =>
+        d.label.toLowerCase().includes("back") ||
+        d.label.toLowerCase().includes("rear")
+      ) || devices[devices.length - 1]
+
+      const controls = await reader.decodeFromVideoDevice(
+        backCamera?.deviceId,
+        videoRef.current,
+        (result, err) => {
+          if (result) {
+            const code = result.getText()
+            playBeep()
+            setScanSuccess(true)
+
+            const stream = videoRef.current?.srcObject as MediaStream
+            if (stream) flashTorch(stream)
+
+            // Fill the field immediately
+            setForm(f => ({ ...f, barcode: code }))
+
+            setTimeout(() => {
+              controls.stop()
+              setShowScanner(false)
+              setScanSuccess(false)
+              // Auto-search directly with the scanned code (avoids stale state issues)
+              handleBarcodeSearch(code)
+            }, 350)
+          }
+        }
+      )
+      scanControlsRef.current = controls
+    } catch (err: any) {
+      console.error("Camera scan error:", err)
+      setScannerError(`Camera failed: ${err?.message || "Unknown error"}. Try again or check permissions.`)
+    }
   }
-}
 
   const stopCameraScan = () => {
     if (scanControlsRef.current) {
@@ -548,9 +586,9 @@ export default function AddProductPage() {
             <label className="text-slate-400 text-xs mb-2 block">🔍 Barcode / Product Search</label>
             <div className="flex gap-2">
               <input ref={barcodeRef} type="text"
-                placeholder="Scan or enter barcode..."
+                placeholder="Scan or enter barcode... (auto-search)"
                 value={form.barcode}
-                onChange={(e) => setForm({ ...form, barcode: e.target.value })}
+                onChange={(e) => handleBarcodeInputChange(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleBarcodeSearch()}
                 className="flex-1 px-4 py-3 bg-slate-900 border border-slate-600/50 rounded-xl text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                 autoFocus
@@ -576,7 +614,7 @@ export default function AddProductPage() {
               )}
             </div>
             <p className="text-slate-600 text-xs mt-2">
-              Existing product scan → batch list show · New barcode → add new product
+              Existing product scan/type → batch list show · New barcode → add new product
               {!existingProduct && !form.barcode && " · No barcode? Click Gen!"}
             </p>
           </div>
@@ -967,7 +1005,7 @@ export default function AddProductPage() {
         </div>
       </div>
 
-      {/*  Live Camera Scanner Box */}
+      {/* Live Camera Scanner Box */}
       {showScanner && (
         <div className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50 px-4">
           <div className="bg-slate-800 border border-slate-700 rounded-2xl p-4 w-full max-w-xs shadow-2xl">
@@ -978,7 +1016,7 @@ export default function AddProductPage() {
             </div>
 
             <div className="relative rounded-xl overflow-hidden bg-black aspect-square">
-                <video ref={videoRef} className="w-full h-full object-cover" autoPlay muted playsInline />
+              <video ref={videoRef} className="w-full h-full object-cover" autoPlay muted playsInline />
               {/* Scan frame overlay */}
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className={`relative w-56 h-32 transition-all ${scanSuccess ? "scale-105" : ""}`}>
